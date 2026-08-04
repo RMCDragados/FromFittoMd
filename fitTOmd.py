@@ -141,8 +141,6 @@ def procesar_fit(archivo_fit):
     # --- FORMATO MARKDOWN EN TABLAS RESUMEN ---
     md = []
     md.append(f"# 🏃‍♂️ Entrenamiento: {fecha_inicio}")
-    md.append(f"**Deporte:** {deporte} ({sub_deporte})  ")
-    md.append(f"**Archivo:** `{archivo_fit}`  \n")
 
     md.append("## 📊 Resumen General de Métricas")
 
@@ -492,10 +490,10 @@ def procesar_directorio(
 # --- EJECUCIÓN ---
 # Elige el modo que prefieras: 'individual' o 'unico'
 procesar_directorio(
-    carpeta_fit="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\",
+    carpeta_fit="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\Part2\\",
     modo="unico",  # <--- Cambia a 'unico' si prefieres todo en un solo archivo
-    carpeta_salida="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\MD\\",
-    archivo_unico="Todo2.md",
+    carpeta_salida="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\Part2\\MD\\",
+    archivo_unico="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\Part2\\MD\\Todo.md",
     max_archivos=1000,  # 0, None o Vacío para procesar todos
     fecha_min="2024-01-01",  # Formato "YYYY-MM-DD" o "YYYY-MM-DD HH:MM" (o tipo datetime)
     fecha_max=None,  # Formato "YYYY-MM-DD" o "YYYY-MM-DD HH:MM" (o tipo datetime)
