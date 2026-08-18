@@ -138,6 +138,28 @@ def procesar_fit(archivo_fit):
     tiempo_contacto_suelo = datos_sesion.get("avg_stance_time", "N/A")
     minutos_intensidad = datos_sesion.get("intensity_factor", "N/A")
 
+    # Notas de la actividad
+    notas = datos_sesion.get("notes", None)
+    if not notas:
+        # Buscar en mensajes "activity"
+        for record in fitfile.get_messages("activity"):
+            for data in record:
+                if data.name == "notes" and data.value:
+                    notas = data.value
+                    break
+            if notas:
+                break
+    if not notas:
+        # Buscar en mensajes "sport"
+        for record in fitfile.get_messages("sport"):
+            for data in record:
+                if data.name in ("name", "notes") and data.value:
+                    if data.name == "notes":
+                        notas = data.value
+                        break
+            if notas:
+                break
+
     # --- FORMATO MARKDOWN EN TABLAS RESUMEN ---
     md = []
     md.append(f"# 🏃‍♂️ Entrenamiento: {fecha_inicio}")
@@ -311,6 +333,12 @@ def procesar_fit(archivo_fit):
             md.append(
                 f"| {i} | {tipo_lap} | {l_dist_km} km | {l_time_str} | {l_ritmo} | {l_fc_med} | {l_fc_max} | {l_cad} | +{l_asc}/-{l_desc}m |"
             )
+        md.append("")
+
+    # --- NOTAS DE LA ACTIVIDAD ---
+    if notas:
+        md.append("## 📝 Notas")
+        md.append(f"{notas}")
         md.append("")
 
     md.append("\n---\n")
@@ -487,14 +515,48 @@ def procesar_directorio(
     )
 
 
-# --- EJECUCIÓN ---
-# Elige el modo que prefieras: 'individual' o 'unico'
-procesar_directorio(
-    carpeta_fit="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\Part2\\",
-    modo="unico",  # <--- Cambia a 'unico' si prefieres todo en un solo archivo
-    carpeta_salida="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\Part2\\MD\\",
-    archivo_unico="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\Part2\\MD\\Todo.md",
-    max_archivos=1000,  # 0, None o Vacío para procesar todos
-    fecha_min="2024-01-01",  # Formato "YYYY-MM-DD" o "YYYY-MM-DD HH:MM" (o tipo datetime)
-    fecha_max=None,  # Formato "YYYY-MM-DD" o "YYYY-MM-DD HH:MM" (o tipo datetime)
-)
+def procesar_archivo_temporal(ruta_fit):
+    """Procesa un único archivo .FIT y devuelve el contenido markdown.
+
+    Parámetros:
+        ruta_fit: (str) Ruta al archivo .fit temporal.
+
+    Retorna:
+        str: Contenido markdown generado a partir del archivo .fit.
+
+    Lanza:
+        FileNotFoundError: Si el archivo no existe.
+        ValueError: Si el archivo no es una actividad válida.
+    """
+    if not os.path.isfile(ruta_fit):
+        raise FileNotFoundError(f"No se encontró el archivo: {ruta_fit}")
+
+    # Validar que sea un archivo de actividad
+    fit_temp = fitparse.FitFile(ruta_fit)
+    es_actividad = False
+    for record in fit_temp.get_messages("file_id"):
+        for data in record:
+            if data.name == "type" and data.value == "activity":
+                es_actividad = True
+                break
+        if es_actividad:
+            break
+
+    if not es_actividad:
+        raise ValueError(f"El archivo no es una actividad válida: {ruta_fit}")
+
+    contenido_md, _ = procesar_fit(ruta_fit)
+    return contenido_md
+
+
+# # --- EJECUCIÓN ---
+# # Elige el modo que prefieras: 'individual' o 'unico'
+# procesar_directorio(
+#     carpeta_fit="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\",
+#     modo="individual",  # <--- Cambia a 'unico' si prefieres todo en un solo archivo
+#     carpeta_salida="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\",
+#     archivo_unico="C:\\Users\\rmagroc\\Downloads\\Entrenamientos\\Todo.md",
+#     max_archivos=1000,  # 0, None o Vacío para procesar todos
+#     fecha_min="2024-01-01",  # Formato "YYYY-MM-DD" o "YYYY-MM-DD HH:MM" (o tipo datetime)
+#     fecha_max=None,  # Formato "YYYY-MM-DD" o "YYYY-MM-DD HH:MM" (o tipo datetime)
+# )
