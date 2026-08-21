@@ -45,22 +45,42 @@ def procesar_fit(archivo_fit):
     datos_sesion = {}
     for record in fitfile.get_messages("session"):
         for data in record:
-            datos_sesion[data.name] = data.value
+            # No sobreescribir un valor válido con None (campos duplicados en FIT)
+            if data.value is not None or data.name not in datos_sesion:
+                datos_sesion[data.name] = data.value
 
     # 2. Leer vueltas (Laps)
     vueltas = []
     for lap in fitfile.get_messages("lap"):
         l_data = {}
         for data in lap:
-            l_data[data.name] = data.value
+            # No sobreescribir un valor válido con None (campos duplicados en FIT)
+            if data.value is not None or data.name not in l_data:
+                l_data[data.name] = data.value
         vueltas.append(l_data)
+
+    # 3. Leer records individuales para zonas de FC
+    records_fc = []
+    for record in fitfile.get_messages("record"):
+        r_data = {}
+        for data in record:
+            if data.name == "heart_rate" and data.value is not None:
+                r_data["heart_rate"] = data.value
+                break
+        if r_data:
+            records_fc.append(r_data)
 
     # Helpers de conversión
     def ms_a_ritmo(velocidad_ms):
+        """Convierte velocidad en m/s a ritmo min/km. Acepta enhanced_avg_speed como fallback."""
         if velocidad_ms and velocidad_ms > 0:
             sec_per_km = 1000 / velocidad_ms
             return f"{int(sec_per_km // 60)}:{int(sec_per_km % 60):02d} min/km"
         return "N/A"
+
+    def obtener_velocidad(datos, campo_normal="avg_speed", campo_enhanced="enhanced_avg_speed"):
+        """Obtiene velocidad priorizando enhanced sobre normal."""
+        return datos.get(campo_enhanced) or datos.get(campo_normal)
 
     def seg_a_tiempo(segundos):
         if segundos is not None and segundos > 0:
@@ -72,21 +92,22 @@ def procesar_fit(archivo_fit):
     sub_deporte = str(datos_sesion.get("sub_sport", "")).capitalize()
     fecha_inicio = datos_sesion.get("start_time", "Desconocida")
 
+    # Nombre del entrenamiento (si viene de un workout programado)
+    nombre_workout = None
+    for record in fitfile.get_messages("workout"):
+        for data in record:
+            if data.name == "wkt_name" and data.value:
+                nombre_workout = data.value
+                break
+        if nombre_workout:
+            break
+
     # Calorías
     calorias_activas = datos_sesion.get("total_calories", "N/A")
-    calorias_reposo = datos_sesion.get("bmr_calories", "N/A")
-    calorias_consumidas = datos_sesion.get("calories_consumed", "N/A")
-    total_calorias = (
-        calorias_activas + calorias_reposo
-        if isinstance(calorias_activas, (int, float))
-        and isinstance(calorias_reposo, (int, float))
-        else calorias_activas
-    )
 
-    # Training Effect & Beneficio
+    # Training Effect
     te_aerobico = datos_sesion.get("total_training_effect", "N/A")
     te_anaerobico = datos_sesion.get("total_anaerobic_training_effect", "N/A")
-    beneficio_principal = datos_sesion.get("primary_benefit", "N/A")
 
     # FC, Tiempo y Potencia
     fc_media = datos_sesion.get("avg_heart_rate", "N/A")
@@ -95,19 +116,20 @@ def procesar_fit(archivo_fit):
     potencia_media = datos_sesion.get("avg_power", "N/A")
     potencia_maxima = datos_sesion.get("max_power", "N/A")
 
-    # Altitud y Carrera/Caminar
+    # Altitud (calcular min/max desde los laps)
     ascenso_total = datos_sesion.get("total_ascent", "N/A")
     descenso_total = datos_sesion.get("total_descent", "N/A")
-    altura_minima = datos_sesion.get("enhanced_min_altitude", "N/A")
-    altura_maxima = datos_sesion.get("enhanced_max_altitude", "N/A")
-    tiempo_carrera = seg_a_tiempo(datos_sesion.get("time_in_run"))
-    tiempo_caminar = seg_a_tiempo(datos_sesion.get("time_in_walk"))
+    
+    # Obtener altitud min/max desde laps (no está en sesión pero sí en cada lap)
+    altitudes_min = [lap.get("enhanced_min_altitude") for lap in vueltas if lap.get("enhanced_min_altitude") is not None]
+    altitudes_max = [lap.get("enhanced_max_altitude") for lap in vueltas if lap.get("enhanced_max_altitude") is not None]
+    altura_minima = round(min(altitudes_min), 1) if altitudes_min else "N/A"
+    altura_maxima = round(max(altitudes_max), 1) if altitudes_max else "N/A"
 
-    # Ritmos
-    ritmo_medio = ms_a_ritmo(datos_sesion.get("avg_speed"))
+    # Ritmos (priorizar enhanced sobre normal)
+    ritmo_medio = ms_a_ritmo(obtener_velocidad(datos_sesion, "avg_speed", "enhanced_avg_speed"))
     ritmo_movimiento = ms_a_ritmo(datos_sesion.get("enhanced_avg_speed"))
-    ritmo_optimo = ms_a_ritmo(datos_sesion.get("max_speed"))
-    ritmo_gap = ms_a_ritmo(datos_sesion.get("avg_grade_adjusted_speed"))
+    ritmo_optimo = ms_a_ritmo(obtener_velocidad(datos_sesion, "max_speed", "enhanced_max_speed"))
 
     # Dinámica de carrera
     cadencia_med = datos_sesion.get(
@@ -136,7 +158,6 @@ def procesar_fit(archivo_fit):
         oscilacion_vertical = round(oscilacion_vertical / 10, 2)
 
     tiempo_contacto_suelo = datos_sesion.get("avg_stance_time", "N/A")
-    minutos_intensidad = datos_sesion.get("intensity_factor", "N/A")
 
     # Notas de la actividad
     notas = datos_sesion.get("notes", None)
@@ -162,25 +183,23 @@ def procesar_fit(archivo_fit):
 
     # --- FORMATO MARKDOWN EN TABLAS RESUMEN ---
     md = []
-    md.append(f"# 🏃‍♂️ Entrenamiento: {fecha_inicio}")
+    if nombre_workout:
+        md.append(f"# 🏃‍♂️ {nombre_workout} — {fecha_inicio}")
+    else:
+        md.append(f"# 🏃‍♂️ Entrenamiento: {fecha_inicio}")
 
     md.append("## 📊 Resumen General de Métricas")
 
     md.append("### 🔥 Calorías")
     md.append("| Métrica | Valor |")
     md.append("| :--- | :--- |")
-    md.append(f"| **Calorías en reposo** | `{calorias_reposo} kcal` |")
     md.append(f"| **Calorías activas** | `{calorias_activas} kcal` |")
-    md.append(f"| **Total de calorías quemadas** | `{total_calorias} kcal` |")
-    md.append(f"| **Calorías consumidas** | `{calorias_consumidas} kcal` |")
-    md.append(f"| **Calorías netas** | `{calorias_activas} kcal` |")
     md.append("")
 
     md.append("### 📈 EFECTO DE ENTRENAMIENTO (Training Effect)")
     md.append("| Métrica | Valor |")
     md.append("| :--- | :--- |")
     md.append(f"| **Training Effect (Aeróbico / Anaeróbico)** | `{te_aerobico} / {te_anaerobico}` |")
-    md.append(f"| **Beneficio principal** | `{beneficio_principal}` |")
     md.append("")
 
     md.append("### 🫀 Frecuencia Cardíaca y Tiempo")
@@ -189,7 +208,6 @@ def procesar_fit(archivo_fit):
     md.append(f"| **Tiempo Total** | `{tiempo_total}` |")
     md.append(f"| **FC Media** | `{fc_media} ppm` |")
     md.append(f"| **FC Máxima** | `{fc_maxima} ppm` |")
-    md.append(f"| **Minutos de intensidad** | `{minutos_intensidad}` |")
     md.append("")
 
     md.append("### ⚡ Potencia")
@@ -208,22 +226,12 @@ def procesar_fit(archivo_fit):
     md.append(f"| **Altura máxima** | `{altura_maxima} m` |")
     md.append("")
 
-    md.append("### 🚶‍♂️ Detección de Carrera / Caminar")
-    md.append("| Métrica | Valor |")
-    md.append("| :--- | :--- |")
-    md.append(f"| **Tiempo de carrera** | `{tiempo_carrera}` |")
-    md.append(f"| **Tiempo de caminar** | `{tiempo_caminar}` |")
-    md.append("")
-
     md.append("### ⏱️ Ritmo")
     md.append("| Métrica | Valor |")
     md.append("| :--- | :--- |")
     md.append(f"| **Ritmo medio** | `{ritmo_medio}` |")
     md.append(f"| **Ritmo medio en movimiento** | `{ritmo_movimiento}` |")
     md.append(f"| **Ritmo óptimo (Máximo)** | `{ritmo_optimo}` |")
-    md.append(
-        f"| **Ritmo medio adaptado a la pendiente (GAP)** | `{ritmo_gap}` |"
-    )
     md.append("")
 
     md.append("### 🦶 Dinámica de Carrera")
@@ -239,58 +247,182 @@ def procesar_fit(archivo_fit):
     )
     md.append("")
 
-    # --- DETECCIÓN Y ANÁLISIS DE SERIES / INTERVALOS ---
-    series = []
+    # --- ZONAS DE FRECUENCIA CARDÍACA ---
+    resumen_zonas = calcular_zonas_fc(records_fc)
+    if resumen_zonas:
+        md.append("### ❤️ Zonas de Frecuencia Cardíaca")
+        md.append("| Zona | Tiempo | % del total |")
+        md.append("| :--- | :---: | :---: |")
+        for zona, tiempo_fmt, pct in resumen_zonas:
+            barra = "█" * int(pct // 5) + "░" * (20 - int(pct // 5))
+            md.append(f"| **{zona}** | `{tiempo_fmt}` | `{pct}%` {barra} |")
+        md.append("")
+
+    # --- DETECCIÓN DEL TIPO DE ENTRENAMIENTO ---
+    # Analizar las intensidades de las vueltas para clasificar el entrenamiento
+    intensidades_unicas = set()
     for lap in vueltas:
-        intensidad = str(lap.get("intensity", "")).lower()
-        trigger = str(lap.get("lap_trigger", "")).lower()
+        intensidad = lap.get("intensity", "")
+        if intensidad is not None:
+            intensidades_unicas.add(str(intensidad).lower())
 
-        # Se considera serie activa si el entrenamiento de Garmin lo marca como 'active'
-        # o si la vuelta fue dada manualmente por botón (manual)
-        if intensidad in ["active", "0"] or trigger == "manual":
-            series.append(lap)
+    # Clasificación:
+    # - INTERVALOS: tiene mezcla de warmup/active/cooldown y rest (intensity=4)
+    # - RODAJE CONTINUO: todas las vueltas tienen la misma intensidad (ej. "5") 
+    #   o son solo "active" con trigger "distance" (auto-lap)
+    es_intervalos = bool(
+        intensidades_unicas & {"warmup", "cooldown"}
+        or ({"active", "4"}.issubset(intensidades_unicas))
+    )
 
-    # Solo añade el apartado de Series si hay laps identificados como tales
-    if series and len(series) > 1:
-        md.append("## 🎯 Análisis Específico de Series / Intervalos")
+    if es_intervalos:
+        # --- ANÁLISIS DE SERIES / INTERVALOS ---
+        # Separar en fases: calentamiento, series de trabajo, descansos, enfriamiento
+        laps_calentamiento = []
+        laps_trabajo = []
+        laps_descanso = []
+        laps_enfriamiento = []
+
+        for lap in vueltas:
+            intensidad = str(lap.get("intensity", "")).lower()
+            if intensidad == "warmup":
+                laps_calentamiento.append(lap)
+            elif intensidad in ["active", "0"]:
+                laps_trabajo.append(lap)
+            elif intensidad in ["4", "rest", "recovery"]:
+                laps_descanso.append(lap)
+            elif intensidad == "cooldown":
+                laps_enfriamiento.append(lap)
+
+        md.append("## 🎯 Análisis de Intervalos")
+        md.append("")
+
+        # Resumen de la estructura del entrenamiento
+        if laps_calentamiento:
+            dist_calent = sum(l.get("total_distance", 0) or 0 for l in laps_calentamiento)
+            tiempo_calent = sum(l.get("total_timer_time", 0) or 0 for l in laps_calentamiento)
+            ritmo_calent = ms_a_ritmo(dist_calent / tiempo_calent if tiempo_calent > 0 else 0)
+            md.append(f"### 🔥 Calentamiento")
+            md.append(f"- **Distancia:** {round(dist_calent/1000, 2)} km")
+            md.append(f"- **Tiempo:** {seg_a_tiempo(tiempo_calent)}")
+            md.append(f"- **Ritmo medio:** {ritmo_calent}")
+            md.append("")
+
+        # Tabla de series de trabajo
+        if laps_trabajo:
+            md.append("### 💪 Series de Trabajo")
+            md.append(
+                "| Serie | Distancia | Tiempo | Ritmo | FC Media | FC Máx | Cadencia | Potencia |"
+            )
+            md.append(
+                "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+            )
+
+            for num, lap in enumerate(laps_trabajo, 1):
+                l_dist_m = lap.get("total_distance", 0) or 0
+                l_dist_km = round(l_dist_m / 1000, 2)
+                l_time_s = lap.get("total_timer_time", 0) or 0
+                l_time_str = seg_a_tiempo(l_time_s)
+                l_speed = obtener_velocidad(lap)
+                l_ritmo = ms_a_ritmo(l_speed)
+                l_fc_med = lap.get("avg_heart_rate", "N/A")
+                l_fc_max = lap.get("max_heart_rate", "N/A")
+
+                l_cad = lap.get("avg_running_cadence", lap.get("avg_cadence", "N/A"))
+                if isinstance(l_cad, (int, float)) and l_cad < 100:
+                    l_cad *= 2
+
+                l_pot = lap.get("avg_power", "N/A")
+
+                md.append(
+                    f"| **{num}** | {l_dist_km} km ({int(l_dist_m)}m) | {l_time_str} | **{l_ritmo}** | {l_fc_med} ppm | {l_fc_max} ppm | {l_cad} ppm | {l_pot} W |"
+                )
+
+            md.append("")
+
+            # Resumen de descansos
+            if laps_descanso:
+                dist_desc = sum(l.get("total_distance", 0) or 0 for l in laps_descanso)
+                tiempo_desc = sum(l.get("total_timer_time", 0) or 0 for l in laps_descanso)
+                ritmo_desc = ms_a_ritmo(dist_desc / tiempo_desc if tiempo_desc > 0 else 0)
+                md.append(f"### 😮‍💨 Descansos entre series")
+                md.append(f"- **Nº de descansos:** {len(laps_descanso)}")
+                md.append(f"- **Tiempo total de descanso:** {seg_a_tiempo(tiempo_desc)}")
+                md.append(f"- **Distancia en descansos:** {round(dist_desc/1000, 2)} km")
+                md.append(f"- **Ritmo medio en descanso:** {ritmo_desc}")
+                md.append("")
+
+        # Enfriamiento
+        if laps_enfriamiento:
+            dist_enfr = sum(l.get("total_distance", 0) or 0 for l in laps_enfriamiento)
+            tiempo_enfr = sum(l.get("total_timer_time", 0) or 0 for l in laps_enfriamiento)
+            ritmo_enfr = ms_a_ritmo(dist_enfr / tiempo_enfr if tiempo_enfr > 0 else 0)
+            md.append(f"### 🧘 Enfriamiento")
+            md.append(f"- **Distancia:** {round(dist_enfr/1000, 2)} km")
+            md.append(f"- **Tiempo:** {seg_a_tiempo(tiempo_enfr)}")
+            md.append(f"- **Ritmo medio:** {ritmo_enfr}")
+            md.append("")
+
+    else:
+        # --- RODAJE CONTINUO / VUELTAS AUTOMÁTICAS ---
+        md.append("## 🏃 Desglose por Kilómetro")
         md.append(
-            "| Serie Nº | Distancia | Tiempo | Ritmo Medio | FC Media | FC Máxima | Cadencia | Potencia |"
+            "| Km | Distancia | Tiempo | Ritmo | FC Media | FC Máx | Cadencia | Desnivel |"
         )
         md.append(
             "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
         )
 
-        num_serie = 1
-        for lap in vueltas:
-            intensidad = str(lap.get("intensity", "")).lower()
-            trigger = str(lap.get("lap_trigger", "")).lower()
-
-            # Filtramos solo laps de trabajo (eliminando calentamientos, descansos y enfriamiento si están etiquetados)
-            if intensidad in ["warmup", "cooldown", "rest", "recovery"]:
-                continue
-
+        dist_acumulada = 0
+        for i, lap in enumerate(vueltas, 1):
             l_dist_m = lap.get("total_distance", 0) or 0
             l_dist_km = round(l_dist_m / 1000, 2)
+            dist_acumulada += l_dist_m
             l_time_s = lap.get("total_timer_time", 0) or 0
             l_time_str = seg_a_tiempo(l_time_s)
-            l_ritmo = ms_a_ritmo(lap.get("avg_speed", 0))
+            l_speed = obtener_velocidad(lap)
+            l_ritmo = ms_a_ritmo(l_speed)
             l_fc_med = lap.get("avg_heart_rate", "N/A")
             l_fc_max = lap.get("max_heart_rate", "N/A")
 
-            l_cad = lap.get(
-                "avg_running_cadence", lap.get("avg_cadence", "N/A")
-            )
+            l_cad = lap.get("avg_running_cadence", lap.get("avg_cadence", "N/A"))
             if isinstance(l_cad, (int, float)) and l_cad < 100:
                 l_cad *= 2
 
-            l_pot = lap.get("avg_power", "N/A")
+            l_asc = lap.get("total_ascent", 0) or 0
+            l_desc = lap.get("total_descent", 0) or 0
+
+            # Para la última vuelta parcial, indicarlo
+            trigger = str(lap.get("lap_trigger", "")).lower()
+            etiqueta_km = f"**{i}**" if trigger != "session_end" else f"*{i} (parcial)*"
 
             md.append(
-                f"| **Serie {num_serie}** | {l_dist_km} km ({int(l_dist_m)}m) | {l_time_str} | **{l_ritmo}** | {l_fc_med} ppm | {l_fc_max} ppm | {l_cad} ppm | {l_pot} W |"
+                f"| {etiqueta_km} | {l_dist_km} km | {l_time_str} | **{l_ritmo}** | {l_fc_med} ppm | {l_fc_max} ppm | {l_cad} ppm | +{l_asc}/-{l_desc}m |"
             )
-            num_serie += 1
 
         md.append("")
+
+        # Resumen del rodaje
+        dist_total_km = round(dist_acumulada / 1000, 2)
+        ritmos_validos = []
+        for lap in vueltas:
+            s = obtener_velocidad(lap)
+            if s and s > 0:
+                ritmos_validos.append(1000 / s)
+
+        if ritmos_validos:
+            ritmo_mas_rapido = min(ritmos_validos)
+            ritmo_mas_lento = max(ritmos_validos)
+            diferencia = ritmo_mas_lento - ritmo_mas_rapido
+
+            md.append("### 📊 Resumen del Rodaje")
+            md.append("| Métrica | Valor |")
+            md.append("| :--- | :--- |")
+            md.append(f"| **Distancia total** | `{dist_total_km} km` |")
+            md.append(f"| **Km más rápido** | `{int(ritmo_mas_rapido // 60)}:{int(ritmo_mas_rapido % 60):02d} min/km` |")
+            md.append(f"| **Km más lento** | `{int(ritmo_mas_lento // 60)}:{int(ritmo_mas_lento % 60):02d} min/km` |")
+            md.append(f"| **Diferencia máxima** | `{int(diferencia // 60)}:{int(diferencia % 60):02d} min/km` |")
+            md.append("")
 
     # --- TABLA DE DESGLOSE COMPLETO POR VUELTAS (LAPS) ---
     if vueltas:
@@ -306,17 +438,20 @@ def procesar_fit(archivo_fit):
             l_dist_km = round(l_dist_m / 1000, 2)
             l_time_s = lap.get("total_timer_time", 0) or 0
             l_time_str = seg_a_tiempo(l_time_s)
-            l_ritmo = ms_a_ritmo(lap.get("avg_speed", 0))
+            l_speed = obtener_velocidad(lap)
+            l_ritmo = ms_a_ritmo(l_speed)
 
             tipo_lap = str(lap.get("intensity", "Lap")).capitalize()
-            if tipo_lap == "0" or tipo_lap == "Active":
+            if tipo_lap in ["0", "Active"]:
                 tipo_lap = "🔥 Serie (Trabajo)"
-            elif tipo_lap == "4" or tipo_lap == "Rest" or tipo_lap == "Recovery":
+            elif tipo_lap in ["4", "Rest", "Recovery"]:
                 tipo_lap = "😮‍💨 Descanso"
             elif tipo_lap == "Warmup":
                 tipo_lap = "🏃 Calentamiento"
             elif tipo_lap == "Cooldown":
                 tipo_lap = "🧘 Enfriamiento"
+            elif tipo_lap == "5":
+                tipo_lap = "🏃 Lap automático"
 
             l_fc_med = lap.get("avg_heart_rate", "N/A")
             l_fc_max = lap.get("max_heart_rate", "N/A")
