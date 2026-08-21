@@ -59,16 +59,36 @@ def procesar_fit(archivo_fit):
                 l_data[data.name] = data.value
         vueltas.append(l_data)
 
-    # 3. Leer records individuales para zonas de FC
+    # 3. Leer records individuales para zonas de FC y métricas derivadas
     records_fc = []
+    records_speed = []
+    records_power = []
     for record in fitfile.get_messages("record"):
         r_data = {}
         for data in record:
-            if data.name == "heart_rate" and data.value is not None:
-                r_data["heart_rate"] = data.value
-                break
-        if r_data:
+            if data.value is not None:
+                if data.name == "heart_rate":
+                    r_data["heart_rate"] = data.value
+                elif data.name == "enhanced_speed":
+                    r_data["speed"] = data.value
+                elif data.name == "power":
+                    r_data["power"] = data.value
+        if r_data.get("heart_rate"):
             records_fc.append(r_data)
+        if r_data.get("speed"):
+            records_speed.append(r_data)
+        if r_data.get("power"):
+            records_power.append(r_data)
+
+    # 4. Leer estructura del workout programado (si existe)
+    workout_steps = []
+    for msg in fitfile.get_messages("workout_step"):
+        step = {}
+        for data in msg:
+            if data.value is not None and "unknown" not in data.name:
+                step[data.name] = data.value
+        if step:
+            workout_steps.append(step)
 
     # Helpers de conversión
     def ms_a_ritmo(velocidad_ms):
@@ -130,6 +150,45 @@ def procesar_fit(archivo_fit):
     ritmo_medio = ms_a_ritmo(obtener_velocidad(datos_sesion, "avg_speed", "enhanced_avg_speed"))
     ritmo_movimiento = ms_a_ritmo(datos_sesion.get("enhanced_avg_speed"))
     ritmo_optimo = ms_a_ritmo(obtener_velocidad(datos_sesion, "max_speed", "enhanced_max_speed"))
+
+    # Métricas avanzadas de rendimiento
+    distancia_total_m = datos_sesion.get("total_distance", 0) or 0
+    distancia_total_km = round(distancia_total_m / 1000, 2)
+    potencia_normalizada = datos_sesion.get("normalized_power", "N/A")
+    total_zancadas = datos_sesion.get("total_strides", "N/A")
+    tiempo_transcurrido = datos_sesion.get("total_elapsed_time", 0) or 0
+    tiempo_en_movimiento = datos_sesion.get("total_timer_time", 0) or 0
+    tiempo_pausa = tiempo_transcurrido - tiempo_en_movimiento if tiempo_transcurrido and tiempo_en_movimiento else 0
+
+    # Drift cardíaco (comparar FC media 1ª mitad vs 2ª mitad)
+    drift_cardiaco = "N/A"
+    if len(records_fc) > 20:
+        mitad = len(records_fc) // 2
+        fc_primera_mitad = [r["heart_rate"] for r in records_fc[:mitad]]
+        fc_segunda_mitad = [r["heart_rate"] for r in records_fc[mitad:]]
+        fc_media_1 = sum(fc_primera_mitad) / len(fc_primera_mitad)
+        fc_media_2 = sum(fc_segunda_mitad) / len(fc_segunda_mitad)
+        drift_pct = ((fc_media_2 - fc_media_1) / fc_media_1) * 100
+        drift_cardiaco = f"{drift_pct:+.1f}% ({round(fc_media_1)} → {round(fc_media_2)} ppm)"
+
+    # Variabilidad de ritmo (coeficiente de variación de velocidad)
+    variabilidad_ritmo = "N/A"
+    if len(records_speed) > 20:
+        velocidades = [r["speed"] for r in records_speed if r["speed"] > 0.5]  # Filtrar paradas
+        if velocidades:
+            media_vel = sum(velocidades) / len(velocidades)
+            varianza = sum((v - media_vel) ** 2 for v in velocidades) / len(velocidades)
+            desv_std = varianza ** 0.5
+            cv = (desv_std / media_vel) * 100
+            variabilidad_ritmo = f"{cv:.1f}%"
+
+    # Índice de eficiencia (velocidad media / FC media)
+    indice_eficiencia = "N/A"
+    vel_media = obtener_velocidad(datos_sesion, "avg_speed", "enhanced_avg_speed")
+    if vel_media and isinstance(fc_media, (int, float)) and fc_media > 0:
+        # m/s por ppm - multiplicado por 1000 para legibilidad
+        ie = (vel_media / fc_media) * 1000
+        indice_eficiencia = f"{ie:.2f}"
 
     # Dinámica de carrera
     cadencia_med = datos_sesion.get(
@@ -196,6 +255,17 @@ def procesar_fit(archivo_fit):
     md.append(f"| **Calorías activas** | `{calorias_activas} kcal` |")
     md.append("")
 
+    md.append("### 📏 Volumen")
+    md.append("| Métrica | Valor |")
+    md.append("| :--- | :--- |")
+    md.append(f"| **Distancia total** | `{distancia_total_km} km` |")
+    md.append(f"| **Tiempo en movimiento** | `{seg_a_tiempo(tiempo_en_movimiento)}` |")
+    md.append(f"| **Tiempo transcurrido** | `{seg_a_tiempo(tiempo_transcurrido)}` |")
+    if tiempo_pausa > 30:
+        md.append(f"| **Tiempo en pausa** | `{seg_a_tiempo(tiempo_pausa)}` |")
+    md.append(f"| **Total de zancadas** | `{total_zancadas}` |")
+    md.append("")
+
     md.append("### 📈 EFECTO DE ENTRENAMIENTO (Training Effect)")
     md.append("| Métrica | Valor |")
     md.append("| :--- | :--- |")
@@ -205,7 +275,6 @@ def procesar_fit(archivo_fit):
     md.append("### 🫀 Frecuencia Cardíaca y Tiempo")
     md.append("| Métrica | Valor |")
     md.append("| :--- | :--- |")
-    md.append(f"| **Tiempo Total** | `{tiempo_total}` |")
     md.append(f"| **FC Media** | `{fc_media} ppm` |")
     md.append(f"| **FC Máxima** | `{fc_maxima} ppm` |")
     md.append("")
@@ -214,6 +283,7 @@ def procesar_fit(archivo_fit):
     md.append("| Métrica | Valor |")
     md.append("| :--- | :--- |")
     md.append(f"| **Potencia media** | `{potencia_media} W` |")
+    md.append(f"| **Potencia normalizada** | `{potencia_normalizada} W` |")
     md.append(f"| **Potencia máxima** | `{potencia_maxima} W` |")
     md.append("")
 
@@ -258,6 +328,15 @@ def procesar_fit(archivo_fit):
             md.append(f"| **{zona}** | `{tiempo_fmt}` | `{pct}%` {barra} |")
         md.append("")
 
+    # --- INDICADORES DE RENDIMIENTO ---
+    md.append("### 🧠 Indicadores de Rendimiento")
+    md.append("| Métrica | Valor | Interpretación |")
+    md.append("| :--- | :---: | :--- |")
+    md.append(f"| **Drift cardíaco** | `{drift_cardiaco}` | Fatiga aeróbica (<5% = bueno) |")
+    md.append(f"| **Variabilidad de ritmo (CV)** | `{variabilidad_ritmo}` | Regularidad (menor = más estable) |")
+    md.append(f"| **Índice de eficiencia** | `{indice_eficiencia}` | Velocidad/FC (mayor = más eficiente) |")
+    md.append("")
+
     # --- DETECCIÓN DEL TIPO DE ENTRENAMIENTO ---
     # Analizar las intensidades de las vueltas para clasificar el entrenamiento
     intensidades_unicas = set()
@@ -297,6 +376,39 @@ def procesar_fit(archivo_fit):
         md.append("## 🎯 Análisis de Intervalos")
         md.append("")
 
+        # Estructura programada del workout (si existe)
+        if workout_steps:
+            md.append("### 📋 Entrenamiento Programado (planificado)")
+            for step in workout_steps:
+                intensidad_step = str(step.get("intensity", "")).lower()
+                dur_type = step.get("duration_type", "")
+                dur_time = step.get("duration_time")
+                repeat = step.get("repeat_steps")
+                target_type = step.get("target_type", "")
+                speed_low = step.get("custom_target_speed_low")
+                speed_high = step.get("custom_target_speed_high")
+                notes_step = step.get("notes", "")
+
+                if dur_type == "repeat_until_steps_cmplt" and repeat:
+                    md.append(f"- **Repeticiones:** {repeat}x")
+                elif intensidad_step == "warmup":
+                    md.append(f"- **Calentamiento:** duración libre")
+                elif intensidad_step == "cooldown":
+                    md.append(f"- **Enfriamiento:** duración libre")
+                elif intensidad_step in ["active", "0"]:
+                    dur_str = f"{int(dur_time)}s" if dur_time else "libre"
+                    ritmo_obj = ""
+                    if speed_low and speed_high and target_type == "speed":
+                        ritmo_low = ms_a_ritmo(speed_low)
+                        ritmo_high = ms_a_ritmo(speed_high)
+                        ritmo_obj = f" a {ritmo_high} - {ritmo_low}"
+                    md.append(f"- **Serie activa:** {dur_str}{ritmo_obj}")
+                elif intensidad_step in ["4", "rest", "recovery"]:
+                    dur_str = f"{int(dur_time)}s" if dur_time else "libre"
+                    extra = f" ({notes_step})" if notes_step else ""
+                    md.append(f"- **Descanso:** {dur_str}{extra}")
+            md.append("")
+
         # Resumen de la estructura del entrenamiento
         if laps_calentamiento:
             dist_calent = sum(l.get("total_distance", 0) or 0 for l in laps_calentamiento)
@@ -312,10 +424,10 @@ def procesar_fit(archivo_fit):
         if laps_trabajo:
             md.append("### 💪 Series de Trabajo")
             md.append(
-                "| Serie | Distancia | Tiempo | Ritmo | FC Media | FC Máx | Cadencia | Potencia |"
+                "| Serie | Distancia | Tiempo | Ritmo | FC Media | FC Máx | Cadencia | Potencia | NP | Zancada | GCT | Pendiente |"
             )
             md.append(
-                "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+                "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
             )
 
             for num, lap in enumerate(laps_trabajo, 1):
@@ -333,9 +445,30 @@ def procesar_fit(archivo_fit):
                     l_cad *= 2
 
                 l_pot = lap.get("avg_power", "N/A")
+                l_np = lap.get("normalized_power", "N/A")
+
+                # Longitud de zancada
+                l_zancada = lap.get("avg_step_length", "N/A")
+                if isinstance(l_zancada, (int, float)):
+                    l_zancada = round(l_zancada / 1000, 2) if l_zancada > 10 else round(l_zancada, 2)
+
+                # Tiempo de contacto con el suelo (GCT)
+                l_gct = lap.get("avg_stance_time", "N/A")
+                if isinstance(l_gct, (int, float)):
+                    l_gct = f"{round(l_gct)}ms"
+
+                # Pendiente (% desnivel positivo y negativo)
+                l_asc = lap.get("total_ascent", 0) or 0
+                l_desc = lap.get("total_descent", 0) or 0
+                if l_dist_m > 0:
+                    pend_pos = round((l_asc / l_dist_m) * 100, 1)
+                    pend_neg = round((l_desc / l_dist_m) * 100, 1)
+                    l_pendiente = f"+{pend_pos}%/-{pend_neg}%"
+                else:
+                    l_pendiente = "N/A"
 
                 md.append(
-                    f"| **{num}** | {l_dist_km} km ({int(l_dist_m)}m) | {l_time_str} | **{l_ritmo}** | {l_fc_med} ppm | {l_fc_max} ppm | {l_cad} ppm | {l_pot} W |"
+                    f"| **{num}** | {l_dist_km} km ({int(l_dist_m)}m) | {l_time_str} | **{l_ritmo}** | {l_fc_med} ppm | {l_fc_max} ppm | {l_cad} ppm | {l_pot} W | {l_np} W | {l_zancada} m | {l_gct} | {l_pendiente} |"
                 )
 
             md.append("")
@@ -367,10 +500,10 @@ def procesar_fit(archivo_fit):
         # --- RODAJE CONTINUO / VUELTAS AUTOMÁTICAS ---
         md.append("## 🏃 Desglose por Kilómetro")
         md.append(
-            "| Km | Distancia | Tiempo | Ritmo | FC Media | FC Máx | Cadencia | Desnivel |"
+            "| Km | Distancia | Tiempo | Ritmo | FC Media | FC Máx | Cadencia | Potencia | NP | Zancada | GCT | Pendiente |"
         )
         md.append(
-            "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+            "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
         )
 
         dist_acumulada = 0
@@ -389,15 +522,35 @@ def procesar_fit(archivo_fit):
             if isinstance(l_cad, (int, float)) and l_cad < 100:
                 l_cad *= 2
 
+            l_pot = lap.get("avg_power", "N/A")
+            l_np = lap.get("normalized_power", "N/A")
+
+            # Longitud de zancada
+            l_zancada = lap.get("avg_step_length", "N/A")
+            if isinstance(l_zancada, (int, float)):
+                l_zancada = round(l_zancada / 1000, 2) if l_zancada > 10 else round(l_zancada, 2)
+
+            # Tiempo de contacto con el suelo (GCT)
+            l_gct = lap.get("avg_stance_time", "N/A")
+            if isinstance(l_gct, (int, float)):
+                l_gct = f"{round(l_gct)}ms"
+
+            # Pendiente (% desnivel positivo y negativo)
             l_asc = lap.get("total_ascent", 0) or 0
             l_desc = lap.get("total_descent", 0) or 0
+            if l_dist_m > 0:
+                pend_pos = round((l_asc / l_dist_m) * 100, 1)
+                pend_neg = round((l_desc / l_dist_m) * 100, 1)
+                l_pendiente = f"+{pend_pos}%/-{pend_neg}%"
+            else:
+                l_pendiente = "N/A"
 
             # Para la última vuelta parcial, indicarlo
             trigger = str(lap.get("lap_trigger", "")).lower()
             etiqueta_km = f"**{i}**" if trigger != "session_end" else f"*{i} (parcial)*"
 
             md.append(
-                f"| {etiqueta_km} | {l_dist_km} km | {l_time_str} | **{l_ritmo}** | {l_fc_med} ppm | {l_fc_max} ppm | {l_cad} ppm | +{l_asc}/-{l_desc}m |"
+                f"| {etiqueta_km} | {l_dist_km} km | {l_time_str} | **{l_ritmo}** | {l_fc_med} ppm | {l_fc_max} ppm | {l_cad} ppm | {l_pot} W | {l_np} W | {l_zancada} m | {l_gct} | {l_pendiente} |"
             )
 
         md.append("")
@@ -428,10 +581,10 @@ def procesar_fit(archivo_fit):
     if vueltas:
         md.append("## ⏱️ Desglose General de Vueltas (Todas)")
         md.append(
-            "| Vuelta | Tipo / Intensidad | Distancia | Tiempo | Ritmo | FC Med | FC Máx | Cadencia | Desnivel |"
+            "| Vuelta | Tipo | Distancia | Tiempo | Ritmo | FC Med | FC Máx | Cadencia | Potencia | NP | Zancada | GCT | Pendiente |"
         )
         md.append(
-            "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+            "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
         )
         for i, lap in enumerate(vueltas, 1):
             l_dist_m = lap.get("total_distance", 0) or 0
@@ -443,15 +596,15 @@ def procesar_fit(archivo_fit):
 
             tipo_lap = str(lap.get("intensity", "Lap")).capitalize()
             if tipo_lap in ["0", "Active"]:
-                tipo_lap = "🔥 Serie (Trabajo)"
+                tipo_lap = "🔥 Trabajo"
             elif tipo_lap in ["4", "Rest", "Recovery"]:
                 tipo_lap = "😮‍💨 Descanso"
             elif tipo_lap == "Warmup":
-                tipo_lap = "🏃 Calentamiento"
+                tipo_lap = "🏃 Calent."
             elif tipo_lap == "Cooldown":
-                tipo_lap = "🧘 Enfriamiento"
+                tipo_lap = "🧘 Enfr."
             elif tipo_lap == "5":
-                tipo_lap = "🏃 Lap automático"
+                tipo_lap = "🏃 Auto"
 
             l_fc_med = lap.get("avg_heart_rate", "N/A")
             l_fc_max = lap.get("max_heart_rate", "N/A")
@@ -462,11 +615,31 @@ def procesar_fit(archivo_fit):
             if isinstance(l_cad, (int, float)) and l_cad < 100:
                 l_cad *= 2
 
+            l_pot = lap.get("avg_power", "N/A")
+            l_np = lap.get("normalized_power", "N/A")
+
+            # Longitud de zancada
+            l_zancada = lap.get("avg_step_length", "N/A")
+            if isinstance(l_zancada, (int, float)):
+                l_zancada = round(l_zancada / 1000, 2) if l_zancada > 10 else round(l_zancada, 2)
+
+            # GCT
+            l_gct = lap.get("avg_stance_time", "N/A")
+            if isinstance(l_gct, (int, float)):
+                l_gct = f"{round(l_gct)}ms"
+
+            # Pendiente
             l_asc = lap.get("total_ascent", 0) or 0
             l_desc = lap.get("total_descent", 0) or 0
+            if l_dist_m > 0:
+                pend_pos = round((l_asc / l_dist_m) * 100, 1)
+                pend_neg = round((l_desc / l_dist_m) * 100, 1)
+                l_pendiente = f"+{pend_pos}%/-{pend_neg}%"
+            else:
+                l_pendiente = "N/A"
 
             md.append(
-                f"| {i} | {tipo_lap} | {l_dist_km} km | {l_time_str} | {l_ritmo} | {l_fc_med} | {l_fc_max} | {l_cad} | +{l_asc}/-{l_desc}m |"
+                f"| {i} | {tipo_lap} | {l_dist_km} km | {l_time_str} | {l_ritmo} | {l_fc_med} | {l_fc_max} | {l_cad} | {l_pot} W | {l_np} W | {l_zancada} m | {l_gct} | {l_pendiente} |"
             )
         md.append("")
 
