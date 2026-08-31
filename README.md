@@ -1,37 +1,90 @@
-# FromFitToMd
+# FromFitToMd v2.0
 
-Procesador de archivos `.FIT` (Garmin) a Markdown. Extrae las metricas de entrenamiento y genera informes estructurados listos para copiar a Copilot 365, Obsidian o cualquier herramienta que soporte Markdown.
+Procesador de entrenamientos y datos de salud de Garmin a Markdown. Se integra con Garmin Connect para descargar actividades y metricas de salud automaticamente, o procesa archivos `.FIT` manualmente. Genera informes estructurados listos para Copilot 365, Obsidian o cualquier herramienta Markdown.
 
-## Funcionalidades
+## Novedades v2.0
 
-- Deteccion automatica del tipo de entrenamiento:
-  - **Intervalos**: separa calentamiento, series de trabajo, descansos y enfriamiento
-  - **Rodaje continuo**: desglose km a km con splits y resumen (km mas rapido/lento)
-- Titulo y notas personalizables desde la interfaz web (prioridad: titulo manual > nombre del workout > fecha)
-- Metricas generales: calorias, volumen, Training Effect, FC, potencia, altitud, ritmo, dinamica de carrera
-- Zonas de frecuencia cardiaca y zonas de potencia con tiempo y porcentaje por zona
-- Indicadores de rendimiento premium: IF, TSS, desacoplamiento Pw:Hr, economia de carrera, indice de fatiga
-- Graficos sparkline de evolucion (FC, ritmo, altitud, potencia) en Markdown puro (Unicode)
-- Grafico de barras de eficiencia por vuelta (velocidad/FC)
-- Nombre del workout programado como titulo (si existe en el .FIT)
-- Estructura del workout planificado vs ejecutado (para entrenamientos programados)
-- Interfaz web con Streamlit para subir archivos, añadir titulo/notas y descargar el `.md`
-- Procesamiento por lotes desde directorio con filtros por fecha y limite de archivos
+- Integracion directa con Garmin Connect (descarga automatica de actividades y salud)
+- Credenciales cifradas con Fernet (nunca en texto plano)
+- Informe de salud diaria: sueno, estres, Body Battery, HRV, SpO2, respiracion, training readiness y mas
+- Titulo y notas recuperados automaticamente de Garmin Connect (sin escribirlos a mano)
+- Meteorologia de la actividad incluida en el informe
+- Tres modos de operacion: datos de ayer, rango de fechas, archivo FIT manual
+- Descarga masiva en ZIP para rangos de fechas
+
+## Modos de operacion
+
+### 1. Datos de ayer
+
+Un clic: descarga automaticamente las actividades y datos de salud del dia anterior. Ideal para la rutina diaria de analisis.
+
+### 2. Rango de fechas
+
+- Selecciona fecha inicio y fin
+- Elige: solo actividades, solo salud, o ambas
+- Barra de progreso durante el procesamiento
+- Descarga individual de cada informe o descarga masiva en ZIP
+
+### 3. Archivo .FIT manual
+
+Funciona como la v1: sube un archivo .FIT, anade titulo y notas opcionales, y descarga el informe.
 
 ## Requisitos
 
 - Python 3.9+
-- Dependencias:
+- Cuenta de Garmin Connect (para modos 1 y 2)
 
-```
+```bash
 pip install -r requirements.txt
 ```
 
-Contenido de `requirements.txt`:
+Dependencias:
 ```
-fitparse
-streamlit
+fitparse>=1.2.0
+streamlit>=1.60.0
+garminconnect>=0.3.7
+cryptography>=42.0.0
 ```
+
+## Configuracion de credenciales
+
+Las credenciales de Garmin se cifran con Fernet y se almacenan como variables de entorno. Nunca se guardan en texto plano.
+
+### Paso 1: Generar clave y cifrar credenciales
+
+```bash
+python garmin_client.py
+```
+
+Esto ejecuta un asistente interactivo que:
+1. Genera una clave Fernet
+2. Pide tu email y contrasena de Garmin
+3. Muestra las variables de entorno cifradas
+
+### Paso 2: Configurar variables de entorno
+
+En Windows (PowerShell):
+```powershell
+$env:GARMIN_KEY = "tu_clave_fernet"
+$env:GARMIN_EMAIL_ENC = "email_cifrado"
+$env:GARMIN_PASS_ENC = "password_cifrado"
+```
+
+En Linux/Mac:
+```bash
+export GARMIN_KEY="tu_clave_fernet"
+export GARMIN_EMAIL_ENC="email_cifrado"
+export GARMIN_PASS_ENC="password_cifrado"
+```
+
+Opcional (ruta de tokens):
+```
+GARMINTOKENS=~/.garminconnect
+```
+
+### Tokens reutilizables
+
+Tras el primer login, los tokens OAuth se guardan en `~/.garminconnect` y se reutilizan automaticamente. No necesitas introducir credenciales de nuevo salvo que caduquen.
 
 ## Uso
 
@@ -41,65 +94,49 @@ streamlit
 python -m streamlit run app.py
 ```
 
-Se abre en `http://localhost:8501`. Sube un archivo `.FIT` y obtendras:
-- Campos opcionales para titulo y notas de la sesion
-- Vista previa renderizada del informe
-- Markdown en crudo para copiar
-- Boton de descarga del archivo `.md`
+Se abre en `http://localhost:8501` con las tres opciones de operacion.
 
-El titulo sigue esta prioridad:
-1. Titulo escrito manualmente en la interfaz
-2. Nombre del workout programado del .FIT (`wkt_name`)
-3. Fecha de la actividad
-
-### Desde Python (procesamiento por lotes)
+### Desde Python
 
 ```python
-import fitTOmd
+import garmin_client as gc
+import fitTOmd as ftm
+import health_to_md as htm
 
-# Un solo archivo con titulo y notas personalizados
-contenido_md = fitTOmd.procesar_archivo_temporal(
+# Login
+garmin = gc.login_garmin()
+
+# Actividades de ayer
+actividades = gc.obtener_actividades_ayer(garmin)
+for act in actividades:
+    activity_id = str(act["activityId"])
+    metadata = gc.obtener_metadata_actividad(garmin, activity_id)
+    weather = gc.obtener_meteorologia_actividad(garmin, activity_id)
+    ruta_fit = gc.descargar_fit_actividad(garmin, activity_id)
+    md = ftm.procesar_archivo_temporal(
+        ruta_fit,
+        garmin_metadata=metadata,
+        meteorologia=weather,
+    )
+
+# Salud de una fecha
+datos = gc.obtener_datos_salud(garmin, "2026-08-20")
+md_salud = htm.generar_salud_md(datos)
+
+# Archivo FIT manual (sin Garmin Connect)
+md_manual = ftm.procesar_archivo_temporal(
     "ruta/al/archivo.fit",
-    titulo="Tirada + 2km a umbral",
-    notas="Sensaciones buenas, ultimos 2km a ritmo de umbral."
-)
-
-# Un solo archivo (funcion base)
-contenido_md, fecha = fitTOmd.procesar_fit(
-    "ruta/al/archivo.fit",
-    titulo_personalizado="Mi titulo",
-    notas_personalizadas="Mis notas"
-)
-
-# Directorio completo
-fitTOmd.procesar_directorio(
-    carpeta_fit="ruta/a/carpeta/",
-    modo="individual",          # "individual" o "unico"
-    carpeta_salida="salida/",
-    max_archivos=100,           # 0 o None para todos
-    fecha_min="2024-01-01",     # Opcional
-    fecha_max="2026-12-31",     # Opcional
+    titulo="Mi titulo",
+    notas="Mis notas",
 )
 ```
 
-### Parametros de `procesar_directorio`
-
-| Parametro | Descripcion | Default |
-| :--- | :--- | :--- |
-| `carpeta_fit` | Ruta a la carpeta con archivos .FIT | (requerido) |
-| `modo` | `"individual"` (un .md por archivo) o `"unico"` (todo en uno) | `"individual"` |
-| `carpeta_salida` | Carpeta destino para los .md individuales | `"entrenamientos_md"` |
-| `archivo_unico` | Ruta del .md unico (modo "unico") | `"diario_entrenamientos.md"` |
-| `max_archivos` | Limite de archivos a procesar (0 = sin limite) | `0` |
-| `fecha_min` | Fecha minima en formato `"YYYY-MM-DD"` | `None` |
-| `fecha_max` | Fecha maxima en formato `"YYYY-MM-DD"` | `None` |
-
-## Estructura del informe generado
+## Estructura del informe de actividad
 
 ```
-# Titulo (manual > nombre workout > fecha)
-## Notas
-Sensaciones, comentarios, etc, sobre el entramiento
+# Titulo (manual > Garmin Connect > workout FIT > fecha)
+> Notas (manual > Garmin description > FIT notes)
+> Meteorologia (temperatura, humedad, viento)
 ## Resumen General de Metricas
   - Calorias
   - Volumen (distancia, tiempo movimiento/transcurrido, zancadas)
@@ -110,82 +147,91 @@ Sensaciones, comentarios, etc, sobre el entramiento
   - Ritmo
   - Dinamica de Carrera
   - Zonas de Frecuencia Cardiaca
-  - Indicadores de Rendimiento (drift, variabilidad, eficiencia, IF, TSS, Pw:Hr, economia, fatiga)
+  - Indicadores de Rendimiento (drift, CV, eficiencia, IF, TSS, Pw:Hr, economia, fatiga)
   - Zonas de Potencia
-## Analisis de Intervalos (si aplica)
-  - Entrenamiento Programado (planificado vs ejecutado)
-  - Calentamiento
-  - Series de Trabajo (tabla con NP, zancada, GCT, pendiente)
-  - Descansos entre series
-  - Enfriamiento
-## Desglose por Kilometro (si es rodaje)
-  - Splits km a km (con potencia, NP, zancada, GCT, pendiente)
-  - Resumen (km rapido/lento/diferencia)
-## Evolucion de la Actividad
-  - Sparkline de Frecuencia Cardiaca
-  - Sparkline de Ritmo
-  - Sparkline de Altitud
-  - Sparkline de Potencia
-  - Grafico de barras de Eficiencia por vuelta
-## Desglose General de Vueltas (con eficiencia por lap)
-## Notas (manuales o del .FIT)
+## Analisis de Intervalos / Desglose por Kilometro
+## Evolucion de la Actividad (sparklines)
+  - FC, Ritmo, Altitud, Potencia
+  - Carrera / Caminar, Cadencia, Zancada, GCT
+  - Eficiencia por vuelta (barras)
+## Desglose General de Vueltas
 ```
 
-## Metricas premium
+## Estructura del informe de salud
 
-Metricas calculadas a partir de los datos del .FIT, equivalentes a servicios como Strava Summit o TrainingPeaks:
+```
+# Informe de Salud: YYYY-MM-DD
+## Resumen del Dia (pasos, distancia, calorias, intensidad)
+## Frecuencia Cardiaca (reposo, max, min)
+## Sueno (duracion, fases, puntuacion, grafico distribucion)
+## Estres (media, max, distribucion, sparkline)
+## Body Battery (max, min, sparkline, carga/descarga)
+## HRV (media nocturna, baseline, estado)
+## SpO2 (media, minima)
+## Respiracion (media, min, max)
+## Pisos subidos/bajados
+## Minutos de Intensidad (moderados, vigorosos, progreso)
+## Hidratacion (ingesta, objetivo, progreso)
+## Training Readiness (puntuacion, nivel)
+## Training Status (estado, VO2 Max, carga semanal)
+## Composicion Corporal (peso, IMC, grasa, musculo)
+```
 
-| Metrica | Descripcion | Interpretacion |
-| :--- | :--- | :--- |
-| **Drift cardiaco** | Diferencia de FC media entre 1a y 2a mitad | <5% = buena base aerobica |
-| **Variabilidad de ritmo (CV)** | Coeficiente de variacion de la velocidad | Menor = ritmo mas estable |
-| **Indice de eficiencia** | Velocidad / FC (x1000) | Mayor = mas eficiente |
-| **Intensity Factor (IF)** | Potencia normalizada / FTP estimado | <1.0 = sub-umbral |
-| **Training Stress Score (TSS)** | Carga de entrenamiento acumulada | <150 = recuperable en 24h |
-| **Desacoplamiento Pw:Hr** | Cambio ratio potencia/FC entre mitades | <5% = buena base aerobica |
-| **Economia de carrera** | Potencia media / velocidad media | Menor = mas economico |
-| **Indice de fatiga** | Perdida de eficiencia (vel/FC) inicio vs fin | Indica degradacion mecanica |
-| **Zonas de potencia** | Distribucion de tiempo en 6 zonas (basadas en FTP estimado) | Similar a TrainingPeaks |
+## Cadena de prioridad de datos
+
+| Dato | Prioridad 1 | Prioridad 2 | Prioridad 3 | Prioridad 4 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Titulo** | Input manual (UI) | activityName (Garmin Connect) | wkt_name (archivo FIT) | Fecha |
+| **Notas** | Input manual (UI) | description (Garmin Connect) | notes (archivo FIT) | — |
+| **Meteorologia** | Garmin Connect API | — | — | — |
+
+## Metricas premium calculadas
+
+| Metrica | Descripcion |
+| :--- | :--- |
+| Drift cardiaco | Diferencia FC media entre mitades (<5% = buena base) |
+| Variabilidad ritmo (CV) | Estabilidad del ritmo |
+| Indice de eficiencia | Velocidad/FC (mayor = mejor) |
+| Intensity Factor (IF) | Potencia normalizada / FTP estimado |
+| Training Stress Score (TSS) | Carga de entrenamiento (<150 = recuperable en 24h) |
+| Desacoplamiento Pw:Hr | Fatiga aerobica por ratio potencia/FC |
+| Economia de carrera | Potencia / velocidad |
+| Indice de fatiga | Perdida de eficiencia inicio vs fin |
+| Zonas de potencia | 6 zonas basadas en FTP estimado |
 
 ## Graficos en Markdown
 
-Los graficos usan caracteres Unicode estandar compatibles con cualquier renderer Markdown:
+Caracteres Unicode compatibles con cualquier renderer:
 
-- **Sparklines** (`▁▂▃▄▅▆▇█`): evolucion temporal de FC, ritmo, altitud y potencia durante toda la actividad
-- **Barras de eficiencia**: grafico horizontal por vuelta mostrando la relacion velocidad/FC
+- **Sparklines** (`▁▂▃▄▅▆▇█`): FC, ritmo, altitud, potencia, cadencia, zancada, GCT, body battery, estres
+- **Timeline carrera/caminar**: `█` corriendo / `░` caminando
+- **Barras de eficiencia**: grafico horizontal por vuelta
+- **Distribucion del sueno**: barras con porcentajes por fase
 
-Ejemplo de sparkline de FC en un entrenamiento de intervalos:
-```
-▁▃▄▄▄▄▅▄▃▅▅▆▅▅▆▅▅▇▇▅▇█▅▅▅▆▆▆▅▅▆▆▅▆▆▆▆
-```
+## Seguridad
 
-## Zonas de Frecuencia Cardiaca
-
-Las zonas estan configuradas en `ZONAS_FC` dentro de `fitTOmd.py`:
-
-| Zona | Rango (ppm) |
-| :--- | :--- |
-| Z1 (Recuperacion) | 0 - 130 |
-| Z2 (Aerobico Bajo) | 131 - 143 |
-| Z3 (Aerobico Alto/Tempo) | 144 - 156 |
-| Z4 (Umbral) | 157 - 168 |
-| Z5 (VO2 Max) | 169 - 250 |
-
-Puedes ajustar estos rangos a tus zonas personales editando el diccionario.
+- Las credenciales se cifran con **Fernet** (AES-128-CBC + HMAC-SHA256)
+- La clave de cifrado se almacena como variable de entorno, nunca en el codigo
+- Los tokens OAuth se guardan localmente en `~/.garminconnect` y se auto-refrescan
+- Las credenciales en texto plano solo existen en memoria durante el login inicial
+- El archivo `.gitignore` debe excluir `~/.garminconnect` y cualquier archivo `.env`
 
 ## Limitaciones
 
-- La autoevaluacion (RPE) no se exporta en el formato .FIT de Garmin (queda solo en Garmin Connect). El titulo y las notas se pueden añadir manualmente desde la interfaz web.
-- El nombre del workout solo aparece si el entrenamiento fue programado desde Garmin (no en actividades libres).
-- Los campos GAP (ritmo ajustado a pendiente) y tiempo de carrera/caminar no estan disponibles en la exportacion .FIT estandar.
-- El FTP se estima como el 75% de la potencia maxima de la sesion. Para metricas IF/TSS mas precisas, se recomienda configurar el FTP real en el codigo.
+- La API de Garmin Connect es no oficial y puede cambiar sin previo aviso
+- Rate limiting: ~50-100 peticiones cada 10 minutos. La app anade delays automaticos
+- La autoevaluacion (RPE) no se exporta en el formato FIT
+- El FTP se estima como 75% de la potencia maxima. Para IF/TSS mas precisos, configurar FTP real
+- Algunos datos de salud requieren dispositivos compatibles (Body Battery, HRV, SpO2)
 
 ## Estructura del proyecto
 
 ```
 FromFitToMd/
-  app.py              # Interfaz web Streamlit (con campos de titulo y notas)
-  fitTOmd.py          # Logica de procesamiento FIT -> Markdown
+  app.py              # Interfaz web Streamlit (3 modos de operacion)
+  fitTOmd.py          # Procesamiento FIT -> Markdown (actividades)
+  health_to_md.py     # Procesamiento datos salud -> Markdown
+  garmin_client.py    # Cliente Garmin Connect (login, descarga, salud)
   requirements.txt    # Dependencias
   docs/               # Archivos FIT de ejemplo
 ```

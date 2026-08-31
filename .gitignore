@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Credenciales locales de Garmin
+set_env.ps1
+set_env.local.ps1
+.garminconnect/
+
+# Scripts de debug
+debug_*.py

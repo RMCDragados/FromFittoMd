@@ -186,7 +186,16 @@ def generar_graficos_evolucion(records_completos, vueltas, obtener_velocidad_fn,
     return md
 
 
-def procesar_fit(archivo_fit, titulo_personalizado=None, notas_personalizadas=None):
+def procesar_fit(archivo_fit, titulo_personalizado=None, notas_personalizadas=None, garmin_metadata=None, meteorologia=None):
+    """Procesa un archivo .FIT y genera el informe Markdown.
+
+    Args:
+        archivo_fit: Ruta al archivo .fit.
+        titulo_personalizado: Título manual del usuario (máxima prioridad).
+        notas_personalizadas: Notas manuales del usuario (máxima prioridad).
+        garmin_metadata: Dict de get_activity() con activityName, description, etc.
+        meteorologia: Dict de get_activity_weather() con temp, humedad, viento.
+    """
     fitfile = fitparse.FitFile(archivo_fit)
 
     # 1. Leer mensaje de la Sesión principal
@@ -478,20 +487,69 @@ def procesar_fit(archivo_fit, titulo_personalizado=None, notas_personalizadas=No
 
     # --- FORMATO MARKDOWN EN TABLAS RESUMEN ---
     md = []
+
+    # Cadena de prioridad para título: manual > Garmin Connect > workout FIT > fecha
+    garmin_nombre = None
+    if garmin_metadata and isinstance(garmin_metadata, dict):
+        garmin_nombre = garmin_metadata.get("activityName")
+
     if titulo_personalizado and titulo_personalizado.strip():
         md.append(f"# 🏃‍♂️ {titulo_personalizado.strip()} — {fecha_inicio}")
+    elif garmin_nombre and garmin_nombre.strip():
+        md.append(f"# 🏃‍♂️ {garmin_nombre.strip()} — {fecha_inicio}")
     elif nombre_workout:
         md.append(f"# 🏃‍♂️ {nombre_workout} — {fecha_inicio}")
     else:
         md.append(f"# 🏃‍♂️ Entrenamiento: {fecha_inicio}")
 
     # --- NOTAS (justo después del título) ---
-    notas_finales = notas_personalizadas if notas_personalizadas and notas_personalizadas.strip() else notas
+    # Prioridad: manual > Garmin Connect description > notas del FIT
+    garmin_descripcion = None
+    if garmin_metadata and isinstance(garmin_metadata, dict):
+        garmin_descripcion = garmin_metadata.get("description")
+
+    notas_finales = None
+    if notas_personalizadas and notas_personalizadas.strip():
+        notas_finales = notas_personalizadas.strip()
+    elif garmin_descripcion and garmin_descripcion.strip():
+        notas_finales = garmin_descripcion.strip()
+    elif notas:
+        notas_finales = notas
+
     if notas_finales:
         md.append("")
-        md.append("## 📝 Notas")
-        md.append(f"{notas_finales}")
+        md.append(f"> 📝 {notas_finales}")
         md.append("")
+
+    # --- METEOROLOGÍA (si está disponible) ---
+    if meteorologia and isinstance(meteorologia, dict):
+        temp = meteorologia.get("temp") or meteorologia.get("temperature")
+        feels_like = meteorologia.get("apparentTemp") or meteorologia.get("feelsLikeTemperature")
+        humidity = meteorologia.get("relativeHumidity") or meteorologia.get("humidity")
+        wind_speed = meteorologia.get("windSpeed")
+        wind_dir = meteorologia.get("windDirection") or meteorologia.get("windDirectionCompassPoint")
+        weather_type = meteorologia.get("weatherTypeDTO", {})
+        condition = weather_type.get("desc") if isinstance(weather_type, dict) else meteorologia.get("condition")
+
+        meteo_parts = []
+        if condition:
+            meteo_parts.append(f"{condition}")
+        if temp is not None:
+            temp_str = f"{temp}°C"
+            if feels_like is not None and feels_like != temp:
+                temp_str += f" (sensación {feels_like}°C)"
+            meteo_parts.append(temp_str)
+        if humidity is not None:
+            meteo_parts.append(f"💧 {humidity}%")
+        if wind_speed is not None:
+            wind_str = f"💨 {wind_speed} km/h"
+            if wind_dir:
+                wind_str += f" {wind_dir}"
+            meteo_parts.append(wind_str)
+
+        if meteo_parts:
+            md.append(f"> 🌤️ **Meteorología:** {' | '.join(meteo_parts)}")
+            md.append("")
 
     md.append("## 📊 Resumen General de Métricas")
 
@@ -1087,13 +1145,15 @@ def procesar_directorio(
     )
 
 
-def procesar_archivo_temporal(ruta_fit, titulo=None, notas=None):
+def procesar_archivo_temporal(ruta_fit, titulo=None, notas=None, garmin_metadata=None, meteorologia=None):
     """Procesa un único archivo .FIT y devuelve el contenido markdown.
 
     Parámetros:
         ruta_fit: (str) Ruta al archivo .fit temporal.
         titulo: (str) Título personalizado para la actividad (opcional).
         notas: (str) Notas personalizadas para la actividad (opcional).
+        garmin_metadata: (dict) Metadata de Garmin Connect (activityName, description, etc.).
+        meteorologia: (dict) Datos meteorológicos de Garmin Connect.
 
     Retorna:
         str: Contenido markdown generado a partir del archivo .fit.
@@ -1119,7 +1179,13 @@ def procesar_archivo_temporal(ruta_fit, titulo=None, notas=None):
     if not es_actividad:
         raise ValueError(f"El archivo no es una actividad válida: {ruta_fit}")
 
-    contenido_md, _ = procesar_fit(ruta_fit, titulo_personalizado=titulo, notas_personalizadas=notas)
+    contenido_md, _ = procesar_fit(
+        ruta_fit,
+        titulo_personalizado=titulo,
+        notas_personalizadas=notas,
+        garmin_metadata=garmin_metadata,
+        meteorologia=meteorologia,
+    )
     return contenido_md
 
 

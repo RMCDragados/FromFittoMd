@@ -1,2 +1,4 @@
-fitparse
-streamlit
+fitparse>=1.2.0
+streamlit>=1.60.0
+garminconnect>=0.3.7
+cryptography>=42.0.0
