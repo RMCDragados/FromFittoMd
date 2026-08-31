@@ -55,20 +55,34 @@ def descifrar_texto(texto_cifrado: str, clave: str) -> str:
 def obtener_credenciales() -> tuple[str, str]:
     """Obtiene y descifra las credenciales de las variables de entorno.
 
+    Busca primero en variables de entorno (local) y luego en
+    st.secrets (Streamlit Cloud).
+
     Retorna:
         (email, password) descifrados.
 
     Lanza:
-        EnvironmentError si faltan variables de entorno.
+        EnvironmentError si faltan credenciales en ambos sitios.
     """
+    # Intentar desde variables de entorno
     clave = (os.environ.get("GARMIN_KEY") or "").strip()
     email_enc = (os.environ.get("GARMIN_EMAIL_ENC") or "").strip()
     pass_enc = (os.environ.get("GARMIN_PASS_ENC") or "").strip()
 
+    # Fallback: Streamlit secrets (para Streamlit Cloud)
+    if not all([clave, email_enc, pass_enc]):
+        try:
+            import streamlit as st
+            clave = clave or st.secrets.get("GARMIN_KEY", "").strip()
+            email_enc = email_enc or st.secrets.get("GARMIN_EMAIL_ENC", "").strip()
+            pass_enc = pass_enc or st.secrets.get("GARMIN_PASS_ENC", "").strip()
+        except Exception:
+            pass
+
     if not all([clave, email_enc, pass_enc]):
         raise EnvironmentError(
             "Faltan variables de entorno: GARMIN_KEY, GARMIN_EMAIL_ENC, GARMIN_PASS_ENC. "
-            "Usa la función generar_clave() y cifrar_texto() para configurarlas."
+            "Configúralas en variables de entorno (local) o en Streamlit Secrets (Cloud)."
         )
 
     email = descifrar_texto(email_enc, clave)
@@ -94,7 +108,13 @@ def login_garmin(prompt_mfa=None) -> Garmin:
         EnvironmentError si faltan credenciales.
     """
     tokenstore = os.environ.get("GARMINTOKENS", "~/.garminconnect")
+    # En Streamlit Cloud, usar /tmp si ~ no es escribible
     tokenstore_path = str(Path(tokenstore).expanduser())
+    try:
+        Path(tokenstore_path).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        tokenstore_path = "/tmp/.garminconnect"
+        Path(tokenstore_path).mkdir(parents=True, exist_ok=True)
 
     # Intentar con tokens guardados
     try:

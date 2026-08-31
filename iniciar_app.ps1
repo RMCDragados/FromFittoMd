@@ -10,6 +10,12 @@ Write-Host ""
 Write-Host "Verificando dependencias..." -ForegroundColor Yellow
 pip install -r requirements.txt -q
 
+# Cargar credenciales si existe set_env.ps1
+if (Test-Path ".\set_env.ps1") {
+    Write-Host "Cargando credenciales desde set_env.ps1..." -ForegroundColor Yellow
+    . .\set_env.ps1
+}
+
 # Verificar si las credenciales de Garmin estan configuradas
 if ($env:GARMIN_KEY -and $env:GARMIN_EMAIL_ENC -and $env:GARMIN_PASS_ENC) {
     Write-Host "Credenciales de Garmin: OK" -ForegroundColor Green
