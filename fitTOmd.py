@@ -38,7 +38,155 @@ def calcular_zonas_fc(records):
     return resumen_zonas
 
 
-def procesar_fit(archivo_fit):
+# Caracteres sparkline de menor a mayor (bloques Unicode de 1/8 a 8/8)
+SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(valores, ancho=50):
+    """Genera una sparkline Unicode a partir de una lista de valores numéricos.
+    Los valores se agrupan en 'ancho' segmentos y se mapean a caracteres de bloque."""
+    if not valores or len(valores) < 2:
+        return ""
+
+    # Agrupar valores en segmentos
+    paso = max(1, len(valores) // ancho)
+    segmentos = []
+    for i in range(0, len(valores), paso):
+        chunk = valores[i : i + paso]
+        segmentos.append(sum(chunk) / len(chunk))
+
+    if not segmentos:
+        return ""
+
+    v_min = min(segmentos)
+    v_max = max(segmentos)
+    rango = v_max - v_min
+
+    if rango == 0:
+        return SPARK_CHARS[4] * len(segmentos)
+
+    resultado = []
+    for v in segmentos:
+        idx = int(((v - v_min) / rango) * (len(SPARK_CHARS) - 1))
+        resultado.append(SPARK_CHARS[idx])
+
+    return "".join(resultado)
+
+
+def generar_graficos_evolucion(records_completos, vueltas, obtener_velocidad_fn, ms_a_ritmo_fn):
+    """Genera sección de gráficos sparkline para la evolución de métricas clave."""
+    md = []
+    ANCHO = 80  # Caracteres de ancho para los sparklines
+
+    # Extraer series temporales desde records
+    hrs = [r["heart_rate"] for r in records_completos if r.get("heart_rate")]
+    speeds = [r["speed"] for r in records_completos if r.get("speed") and r["speed"] > 0.5]
+    alts = [r["altitude"] for r in records_completos if r.get("altitude")]
+    powers = [r["power"] for r in records_completos if r.get("power") and r["power"] > 0]
+    cadencias = [r["cadence"] * 2 if r.get("cadence") and r["cadence"] < 100 else r["cadence"] for r in records_completos if r.get("cadence")]
+    gcts = [r["stance_time"] for r in records_completos if r.get("stance_time") and r["stance_time"] > 0]
+    strides = [r["step_length"] / 1000 if r.get("step_length") and r["step_length"] > 10 else r.get("step_length", 0) for r in records_completos if r.get("step_length") and r["step_length"] > 0]
+
+    if not any([hrs, speeds, alts, powers]):
+        return md
+
+    md.append("## 📈 Evolución de la Actividad")
+    md.append("")
+
+    if hrs:
+        spark_hr = sparkline(hrs, ANCHO)
+        md.append(f"**Frecuencia Cardíaca** (min {min(hrs)} — max {max(hrs)} ppm)")
+        md.append(f"`{spark_hr}`")
+        md.append("")
+
+    if speeds:
+        # Ritmo (invertir: más velocidad = menor ritmo = más rápido)
+        ritmos_s = [1000 / s for s in speeds]
+        spark_ritmo = sparkline([-r for r in ritmos_s], ANCHO)
+        ritmo_min_s = min(ritmos_s)
+        ritmo_max_s = max(ritmos_s)
+        r_min = f"{int(ritmo_min_s // 60)}:{int(ritmo_min_s % 60):02d}"
+        r_max = f"{int(ritmo_max_s // 60)}:{int(ritmo_max_s % 60):02d}"
+        md.append(f"**Ritmo** (rápido {r_min} — lento {r_max} min/km) *arriba = más rápido*")
+        md.append(f"`{spark_ritmo}`")
+        md.append("")
+
+    if alts:
+        spark_alt = sparkline(alts, ANCHO)
+        md.append(f"**Altitud** (min {round(min(alts), 1)} — max {round(max(alts), 1)} m)")
+        md.append(f"`{spark_alt}`")
+        md.append("")
+
+    if powers:
+        spark_pw = sparkline(powers, ANCHO)
+        md.append(f"**Potencia** (min {min(powers)} — max {max(powers)} W)")
+        md.append(f"`{spark_pw}`")
+        md.append("")
+
+    # Carrera / Caminar: línea de tiempo
+    if speeds:
+        UMBRAL_CAMINAR = 1.8  # m/s (~9:15 min/km)
+        paso = max(1, len(speeds) // ANCHO)
+        timeline = []
+        for i in range(0, len(speeds), paso):
+            chunk = speeds[i : i + paso]
+            media_chunk = sum(chunk) / len(chunk)
+            if media_chunk >= UMBRAL_CAMINAR:
+                timeline.append("█")  # Corriendo
+            else:
+                timeline.append("░")  # Caminando
+        pct_corriendo = sum(1 for s in speeds if s >= UMBRAL_CAMINAR) / len(speeds) * 100
+        pct_caminando = 100 - pct_corriendo
+        md.append(f"**Carrera / Caminar** (█ corriendo {pct_corriendo:.0f}% — ░ caminando {pct_caminando:.0f}%)")
+        md.append(f"`{''.join(timeline)}`")
+        md.append("")
+
+    if cadencias:
+        spark_cad = sparkline(cadencias, ANCHO)
+        md.append(f"**Cadencia** (min {min(cadencias)} — max {max(cadencias)} ppm)")
+        md.append(f"`{spark_cad}`")
+        md.append("")
+
+    if strides:
+        spark_stride = sparkline(strides, ANCHO)
+        md.append(f"**Longitud de zancada** (min {min(strides):.2f} — max {max(strides):.2f} m)")
+        md.append(f"`{spark_stride}`")
+        md.append("")
+
+    if gcts:
+        spark_gct = sparkline(gcts, ANCHO)
+        md.append(f"**Tiempo de contacto con el suelo** (min {min(gcts):.0f} — max {max(gcts):.0f} ms)")
+        md.append(f"`{spark_gct}`")
+        md.append("")
+
+    # Gráfico de eficiencia por lap (velocidad/FC)
+    eficiencias_lap = []
+    for lap in vueltas:
+        speed = obtener_velocidad_fn(lap)
+        hr = lap.get("avg_heart_rate")
+        if speed and hr and speed > 0 and hr > 0:
+            eficiencias_lap.append(round((speed / hr) * 1000, 1))
+        else:
+            eficiencias_lap.append(0)
+
+    if eficiencias_lap and max(eficiencias_lap) > 0:
+        max_ef = max(eficiencias_lap)
+        md.append("**Eficiencia por vuelta** (velocidad/FC — mayor = mejor)")
+        md.append("```")
+        for i, ef in enumerate(eficiencias_lap, 1):
+            if ef > 0:
+                bar_len = int((ef / max_ef) * 40)
+                bar = "█" * bar_len
+                md.append(f"  Lap {i:>2d} | {bar} {ef}")
+            else:
+                md.append(f"  Lap {i:>2d} | — sin datos")
+        md.append("```")
+        md.append("")
+
+    return md
+
+
+def procesar_fit(archivo_fit, titulo_personalizado=None, notas_personalizadas=None):
     fitfile = fitparse.FitFile(archivo_fit)
 
     # 1. Leer mensaje de la Sesión principal
@@ -63,6 +211,7 @@ def procesar_fit(archivo_fit):
     records_fc = []
     records_speed = []
     records_power = []
+    records_completos = []
     for record in fitfile.get_messages("record"):
         r_data = {}
         for data in record:
@@ -73,6 +222,17 @@ def procesar_fit(archivo_fit):
                     r_data["speed"] = data.value
                 elif data.name == "power":
                     r_data["power"] = data.value
+                elif data.name == "enhanced_altitude":
+                    r_data["altitude"] = data.value
+                elif data.name == "cadence":
+                    r_data["cadence"] = data.value
+                elif data.name == "stance_time":
+                    r_data["stance_time"] = data.value
+                elif data.name == "vertical_oscillation":
+                    r_data["vertical_oscillation"] = data.value
+                elif data.name == "step_length":
+                    r_data["step_length"] = data.value
+        records_completos.append(r_data)
         if r_data.get("heart_rate"):
             records_fc.append(r_data)
         if r_data.get("speed"):
@@ -190,6 +350,82 @@ def procesar_fit(archivo_fit):
         ie = (vel_media / fc_media) * 1000
         indice_eficiencia = f"{ie:.2f}"
 
+    # --- MÉTRICAS PREMIUM ---
+
+    # Intensity Factor (IF) = Potencia Normalizada / FTP estimado
+    # Estimamos FTP como 95% de la potencia máxima de la sesión (aproximación si no se conoce)
+    intensity_factor = "N/A"
+    np_val = datos_sesion.get("normalized_power")
+    max_pow = datos_sesion.get("max_power")
+    if np_val and max_pow and max_pow > 0:
+        ftp_estimado = max_pow * 0.75  # Aproximación conservadora
+        if_val = np_val / ftp_estimado
+        intensity_factor = f"{if_val:.2f}"
+
+    # Training Stress Score (TSS) = (duración_s * NP * IF) / (FTP * 3600) * 100
+    tss = "N/A"
+    if np_val and max_pow and tiempo_en_movimiento and tiempo_en_movimiento > 0:
+        ftp_estimado = max_pow * 0.75
+        if ftp_estimado > 0:
+            if_val = np_val / ftp_estimado
+            tss_val = (tiempo_en_movimiento * np_val * if_val) / (ftp_estimado * 3600) * 100
+            tss = f"{tss_val:.0f}"
+
+    # Desacoplamiento Potencia:FC (Pw:Hr) - compara ratio potencia/FC entre 1ª y 2ª mitad
+    desacoplamiento = "N/A"
+    records_con_pw_hr = [r for r in records_completos if r.get("power") and r.get("heart_rate") and r["power"] > 0 and r["heart_rate"] > 0]
+    if len(records_con_pw_hr) > 40:
+        mitad = len(records_con_pw_hr) // 2
+        ratio_1 = sum(r["power"] for r in records_con_pw_hr[:mitad]) / sum(r["heart_rate"] for r in records_con_pw_hr[:mitad])
+        ratio_2 = sum(r["power"] for r in records_con_pw_hr[mitad:]) / sum(r["heart_rate"] for r in records_con_pw_hr[mitad:])
+        if ratio_1 > 0:
+            desacop_pct = ((ratio_1 - ratio_2) / ratio_1) * 100
+            desacoplamiento = f"{desacop_pct:+.1f}%"
+
+    # Economía de carrera (potencia media / velocidad media en m/s)
+    economia_carrera = "N/A"
+    if vel_media and isinstance(potencia_media, (int, float)) and vel_media > 0:
+        eco = potencia_media / vel_media
+        economia_carrera = f"{eco:.1f} W/(m/s)"
+
+    # Zonas de Potencia (basadas en FTP estimado)
+    zonas_potencia = []
+    if records_power and max_pow:
+        ftp_est = max_pow * 0.75
+        ZONAS_POT = {
+            "Z1 (Recuperación)": (0, ftp_est * 0.55),
+            "Z2 (Resistencia)": (ftp_est * 0.55, ftp_est * 0.75),
+            "Z3 (Tempo)": (ftp_est * 0.75, ftp_est * 0.90),
+            "Z4 (Umbral)": (ftp_est * 0.90, ftp_est * 1.05),
+            "Z5 (VO2 Máx)": (ftp_est * 1.05, ftp_est * 1.20),
+            "Z6 (Anaeróbico)": (ftp_est * 1.20, ftp_est * 5),
+        }
+        tiempos_pot = {z: 0 for z in ZONAS_POT}
+        total_pot = 0
+        for r in records_power:
+            pw = r["power"]
+            total_pot += 1
+            for zona, (lo, hi) in ZONAS_POT.items():
+                if lo <= pw < hi:
+                    tiempos_pot[zona] += 1
+                    break
+        if total_pot > 0:
+            for zona, segs in tiempos_pot.items():
+                pct = (segs / total_pot) * 100
+                zonas_potencia.append((zona, str(timedelta(seconds=segs)), round(pct, 1)))
+
+    # Índice de fatiga por lap (comparar ritmo/FC del primer y último lap similar)
+    fatiga_por_laps = "N/A"
+    laps_con_datos = [l for l in vueltas if l.get("avg_heart_rate") and obtener_velocidad(l) and obtener_velocidad(l) > 0]
+    if len(laps_con_datos) >= 3:
+        primer_lap = laps_con_datos[0]
+        ultimo_lap = laps_con_datos[-2] if len(laps_con_datos) > 2 else laps_con_datos[-1]  # Evitar el parcial final
+        ef_inicio = obtener_velocidad(primer_lap) / primer_lap["avg_heart_rate"]
+        ef_fin = obtener_velocidad(ultimo_lap) / ultimo_lap["avg_heart_rate"]
+        if ef_inicio > 0:
+            fatiga_pct = ((ef_inicio - ef_fin) / ef_inicio) * 100
+            fatiga_por_laps = f"{fatiga_pct:+.1f}%"
+
     # Dinámica de carrera
     cadencia_med = datos_sesion.get(
         "avg_running_cadence", datos_sesion.get("avg_cadence", "N/A")
@@ -242,10 +478,20 @@ def procesar_fit(archivo_fit):
 
     # --- FORMATO MARKDOWN EN TABLAS RESUMEN ---
     md = []
-    if nombre_workout:
+    if titulo_personalizado and titulo_personalizado.strip():
+        md.append(f"# 🏃‍♂️ {titulo_personalizado.strip()} — {fecha_inicio}")
+    elif nombre_workout:
         md.append(f"# 🏃‍♂️ {nombre_workout} — {fecha_inicio}")
     else:
         md.append(f"# 🏃‍♂️ Entrenamiento: {fecha_inicio}")
+
+    # --- NOTAS (justo después del título) ---
+    notas_finales = notas_personalizadas if notas_personalizadas and notas_personalizadas.strip() else notas
+    if notas_finales:
+        md.append("")
+        md.append("## 📝 Notas")
+        md.append(f"{notas_finales}")
+        md.append("")
 
     md.append("## 📊 Resumen General de Métricas")
 
@@ -335,7 +581,22 @@ def procesar_fit(archivo_fit):
     md.append(f"| **Drift cardíaco** | `{drift_cardiaco}` | Fatiga aeróbica (<5% = bueno) |")
     md.append(f"| **Variabilidad de ritmo (CV)** | `{variabilidad_ritmo}` | Regularidad (menor = más estable) |")
     md.append(f"| **Índice de eficiencia** | `{indice_eficiencia}` | Velocidad/FC (mayor = más eficiente) |")
+    md.append(f"| **Intensity Factor (IF)** | `{intensity_factor}` | Intensidad relativa al FTP (<1.0 = sub-umbral) |")
+    md.append(f"| **Training Stress Score (TSS)** | `{tss}` | Carga de entrenamiento (<150 = recuperable en 24h) |")
+    md.append(f"| **Desacoplamiento Pw:Hr** | `{desacoplamiento}` | Fatiga aeróbica (<5% = buena base) |")
+    md.append(f"| **Economía de carrera** | `{economia_carrera}` | Potencia necesaria por velocidad (menor = mejor) |")
+    md.append(f"| **Índice de fatiga** | `{fatiga_por_laps}` | Pérdida de eficiencia inicio vs fin |")
     md.append("")
+
+    # --- ZONAS DE POTENCIA ---
+    if zonas_potencia:
+        md.append("### ⚡ Zonas de Potencia")
+        md.append("| Zona | Tiempo | % del total |")
+        md.append("| :--- | :---: | :---: |")
+        for zona, tiempo_fmt, pct in zonas_potencia:
+            barra = "█" * int(pct // 5) + "░" * (20 - int(pct // 5))
+            md.append(f"| **{zona}** | `{tiempo_fmt}` | `{pct}%` {barra} |")
+        md.append("")
 
     # --- DETECCIÓN DEL TIPO DE ENTRENAMIENTO ---
     # Analizar las intensidades de las vueltas para clasificar el entrenamiento
@@ -577,14 +838,18 @@ def procesar_fit(archivo_fit):
             md.append(f"| **Diferencia máxima** | `{int(diferencia // 60)}:{int(diferencia % 60):02d} min/km` |")
             md.append("")
 
+    # --- GRÁFICOS DE EVOLUCIÓN ---
+    graficos = generar_graficos_evolucion(records_completos, vueltas, obtener_velocidad, ms_a_ritmo)
+    md.extend(graficos)
+
     # --- TABLA DE DESGLOSE COMPLETO POR VUELTAS (LAPS) ---
     if vueltas:
         md.append("## ⏱️ Desglose General de Vueltas (Todas)")
         md.append(
-            "| Vuelta | Tipo | Distancia | Tiempo | Ritmo | FC Med | FC Máx | Cadencia | Potencia | NP | Zancada | GCT | Pendiente |"
+            "| Vuelta | Tipo | Distancia | Tiempo | Ritmo | FC Med | FC Máx | Cadencia | Potencia | NP | Zancada | GCT | Pendiente | Eficiencia |"
         )
         md.append(
-            "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
+            "| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |"
         )
         for i, lap in enumerate(vueltas, 1):
             l_dist_m = lap.get("total_distance", 0) or 0
@@ -638,15 +903,14 @@ def procesar_fit(archivo_fit):
             else:
                 l_pendiente = "N/A"
 
-            md.append(
-                f"| {i} | {tipo_lap} | {l_dist_km} km | {l_time_str} | {l_ritmo} | {l_fc_med} | {l_fc_max} | {l_cad} | {l_pot} W | {l_np} W | {l_zancada} m | {l_gct} | {l_pendiente} |"
-            )
-        md.append("")
+            # Eficiencia por lap (velocidad/FC)
+            l_eficiencia = "N/A"
+            if l_speed and isinstance(l_fc_med, (int, float)) and l_speed > 0 and l_fc_med > 0:
+                l_eficiencia = f"{(l_speed / l_fc_med) * 1000:.1f}"
 
-    # --- NOTAS DE LA ACTIVIDAD ---
-    if notas:
-        md.append("## 📝 Notas")
-        md.append(f"{notas}")
+            md.append(
+                f"| {i} | {tipo_lap} | {l_dist_km} km | {l_time_str} | {l_ritmo} | {l_fc_med} | {l_fc_max} | {l_cad} | {l_pot} W | {l_np} W | {l_zancada} m | {l_gct} | {l_pendiente} | {l_eficiencia} |"
+            )
         md.append("")
 
     md.append("\n---\n")
@@ -823,11 +1087,13 @@ def procesar_directorio(
     )
 
 
-def procesar_archivo_temporal(ruta_fit):
+def procesar_archivo_temporal(ruta_fit, titulo=None, notas=None):
     """Procesa un único archivo .FIT y devuelve el contenido markdown.
 
     Parámetros:
         ruta_fit: (str) Ruta al archivo .fit temporal.
+        titulo: (str) Título personalizado para la actividad (opcional).
+        notas: (str) Notas personalizadas para la actividad (opcional).
 
     Retorna:
         str: Contenido markdown generado a partir del archivo .fit.
@@ -853,7 +1119,7 @@ def procesar_archivo_temporal(ruta_fit):
     if not es_actividad:
         raise ValueError(f"El archivo no es una actividad válida: {ruta_fit}")
 
-    contenido_md, _ = procesar_fit(ruta_fit)
+    contenido_md, _ = procesar_fit(ruta_fit, titulo_personalizado=titulo, notas_personalizadas=notas)
     return contenido_md
 
 
