@@ -4,6 +4,7 @@ Procesador de entrenamientos y datos de salud de Garmin a Markdown. Se integra c
 
 ## Novedades v2.0
 
+- Soporte para entrenamientos de fuerza (gimnasio): informe con series, repeticiones, peso y volumen
 - Integracion directa con Garmin Connect (descarga automatica de actividades y salud)
 - Credenciales cifradas con Fernet (nunca en texto plano)
 - Informe de salud diaria: sueno, estres, Body Battery, HRV, SpO2, respiracion, training readiness y mas
@@ -157,6 +158,33 @@ md_manual = ftm.procesar_archivo_temporal(
 ## Desglose General de Vueltas
 ```
 
+## Estructura del informe de fuerza
+
+Cuando el archivo FIT es un entrenamiento de fuerza (`sub_sport = strength_training`), se detecta automáticamente y se genera un informe adaptado al gimnasio, sin métricas de ritmo/velocidad/altitud que no aplican. Los datos provienen de los mensajes `set` del FIT (series y descansos).
+
+```
+# Titulo (manual > Garmin Connect > nombre del deporte/workout > fecha)
+> Notas (manual > Garmin description > FIT notes)
+## Resumen General
+  - Ejercicios distintos
+  - Series de trabajo
+  - Repeticiones totales
+  - Volumen total levantado (peso x reps de cada serie)
+  - Peso maximo
+  - Calorias
+  - Tiempo total, transcurrido, bajo tension y de descanso
+### Frecuencia Cardiaca y Esfuerzo (FC media/max, Training Effect)
+## Resumen por Ejercicio (series, reps, rango de peso, volumen)
+## Detalle de Series (reps, peso, duracion y descanso posterior por serie)
+### Volumen por Ejercicio (grafico de barras)
+```
+
+Notas sobre los datos de fuerza:
+
+- El **volumen** se calcula como la suma de `peso x repeticiones` de cada serie de trabajo.
+- El reconocimiento del **tipo de ejercicio** depende de Garmin. Cuando el reloj no clasifica un movimiento, usa un código genérico (`65534`) y el informe cae en el nombre disponible; ejercicios distintos pueden agruparse bajo una misma etiqueta. Es una limitación del archivo, no del procesado.
+- Los "sets fantasma" (0 repeticiones y duracion despreciable, generados al cerrar la sesion) se descartan.
+
 ## Estructura del informe de salud
 
 ```
@@ -229,7 +257,8 @@ Caracteres Unicode compatibles con cualquier renderer:
 ```
 FromFitToMd/
   app.py              # Interfaz web Streamlit (3 modos de operacion)
-  fitTOmd.py          # Procesamiento FIT -> Markdown (actividades)
+  fitTOmd.py          # Procesamiento FIT -> Markdown (actividades; detecta fuerza y delega)
+  strength_to_md.py   # Procesamiento FIT de fuerza (strength_training) -> Markdown
   health_to_md.py     # Procesamiento datos salud -> Markdown
   garmin_client.py    # Cliente Garmin Connect (login, descarga, salud)
   requirements.txt    # Dependencias

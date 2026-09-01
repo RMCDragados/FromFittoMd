@@ -276,6 +276,38 @@ def procesar_fit(archivo_fit, titulo_personalizado=None, notas_personalizadas=No
             return str(timedelta(seconds=int(segundos)))
         return "N/A"
 
+    # --- DESVÍO: ENTRENAMIENTO DE FUERZA ---
+    # Los entrenamientos de fuerza no usan laps/records de velocidad, sino
+    # mensajes 'set'. Se delega en el módulo especializado.
+    import strength_to_md as stm
+
+    if stm.es_entrenamiento_fuerza(datos_sesion):
+        # Nombre del workout programado (wkt_name) si existe
+        nombre_workout_fuerza = None
+        for record in fitfile.get_messages("workout"):
+            for data in record:
+                if data.name == "wkt_name" and data.value:
+                    nombre_workout_fuerza = data.value
+                    break
+            if nombre_workout_fuerza:
+                break
+
+        # Nombre del deporte definido por el usuario (mensaje 'sport', ej. "Fuerza")
+        for record in fitfile.get_messages("sport"):
+            for data in record:
+                if data.name == "name" and data.value:
+                    datos_sesion["_sport_name"] = data.value
+                    break
+
+        return stm.procesar_fuerza(
+            fitfile,
+            datos_sesion,
+            nombre_workout=nombre_workout_fuerza,
+            titulo_personalizado=titulo_personalizado,
+            notas_personalizadas=notas_personalizadas,
+            garmin_metadata=garmin_metadata,
+        )
+
     # --- DATOS GENERALES ---
     deporte = str(datos_sesion.get("sport", "Desconocido")).capitalize()
     sub_deporte = str(datos_sesion.get("sub_sport", "")).capitalize()
